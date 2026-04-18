@@ -1,0 +1,819 @@
+// Run with: SLINT_STYLE=material cargo run
+import {
+    Button, LineEdit, ScrollView, Spinner, Palette
+} from "std-widgets.slint";
+
+export struct FileEntry {
+    name: string,
+    size: string,
+    kind: string,
+    modified: string,
+}
+
+component KindBadge inherits Rectangle {
+    in property <string> kind;
+
+    width: kind == "DIR" ? 64px : 56px;
+    height: 24px;
+    border-radius: 12px;
+    background: kind == "DIR" ? #b7791f.with-alpha(0.14) :
+                kind == "PDF" ? #b83232.with-alpha(0.14) :
+                kind == "PNG" || kind == "JPG" ? #2b6cb0.with-alpha(0.14) :
+                kind == "MP4" ? #2f855a.with-alpha(0.14) :
+                kind == "ZIP" ? #805ad5.with-alpha(0.14) :
+                                Palette.foreground.with-alpha(0.08);
+
+    Text {
+        text: kind == "DIR" ? "FOLDER" : kind;
+        color: kind == "DIR" ? #9c5f12 :
+               kind == "PDF" ? #b83232 :
+               kind == "PNG" || kind == "JPG" ? #2b6cb0 :
+               kind == "MP4" ? #2f855a :
+               kind == "ZIP" ? #6b46c1 :
+                               Palette.foreground.with-alpha(0.7);
+        font-size: 10px;
+        font-weight: 700;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        y: (parent.height - self.height) / 2;
+        width: 100%;
+        height: 100%;
+    }
+}
+
+component ActionChip inherits Rectangle {
+    in property <string> label;
+    in property <bool> danger: false;
+    callback tapped();
+
+    height: 30px;
+    width: 78px;
+    border-radius: 15px;
+    border-width: 1px;
+    border-color: danger ? #d64545.with-alpha(0.3) : Palette.border.with-alpha(0.7);
+    background: tap.has-hover
+        ? (danger ? #d64545.with-alpha(0.10) : Palette.accent-background.with-alpha(0.08))
+        : (danger ? #d64545.with-alpha(0.04) : Palette.background);
+
+    tap := TouchArea {
+        clicked => { root.tapped(); }
+    }
+
+    Text {
+        text: root.label;
+        color: danger ? #c53030 : Palette.foreground.with-alpha(0.78);
+        font-size: 11px;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        y: (parent.height - self.height) / 2;
+        width: 100%;
+        height: 100%;
+    }
+}
+
+component FileRow inherits Rectangle {
+    in property <FileEntry> entry;
+    in property <bool> is-even;
+    in property <int> index;
+    
+    callback row-clicked(int);
+    callback download-clicked(int);
+    callback delete-clicked(int);
+
+    height: 64px;
+    border-radius: 14px;
+    background: hover-area.has-hover
+        ? Palette.accent-background.with-alpha(0.10)
+        : is-even
+            ? Palette.alternate-background.with-alpha(0.65)
+            : Palette.background;
+
+    hover-area := TouchArea {
+        clicked => { root.row-clicked(root.index); }
+    }
+
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 14px;
+        spacing: 12px;
+        alignment: center;
+
+        Rectangle {
+            width: 40px;
+            height: 40px;
+            border-radius: 12px;
+            background: entry.kind == "DIR" ? #d69e2e.with-alpha(0.16) :
+                        entry.kind == "PDF" ? #e53e3e.with-alpha(0.14) :
+                        entry.kind == "PNG" || entry.kind == "JPG" ? #3182ce.with-alpha(0.14) :
+                        entry.kind == "MP4" ? #38a169.with-alpha(0.14) :
+                        entry.kind == "ZIP" ? #805ad5.with-alpha(0.14) :
+                                              Palette.foreground.with-alpha(0.08);
+
+            Text {
+                text: entry.kind == "DIR" ? "D" :
+                      entry.kind == "PDF" ? "P" :
+                      entry.kind == "PNG" || entry.kind == "JPG" ? "I" :
+                      entry.kind == "MP4" ? "V" :
+                      entry.kind == "ZIP" ? "Z" : "F";
+                color: entry.kind == "DIR" ? #9c5f12 :
+                       entry.kind == "PDF" ? #c53030 :
+                       entry.kind == "PNG" || entry.kind == "JPG" ? #2b6cb0 :
+                       entry.kind == "MP4" ? #2f855a :
+                       entry.kind == "ZIP" ? #6b46c1 :
+                                             Palette.foreground.with-alpha(0.72);
+                font-size: 16px;
+                font-weight: 700;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                y: (parent.height - self.height) / 2;
+                width: 100%;
+                height: 100%;
+            }
+        }
+
+        VerticalLayout {
+            spacing: 2px;
+            alignment: start;
+            horizontal-stretch: 1;
+
+            Text {
+                text: entry.name;
+                color: Palette.foreground;
+                font-size: 13px;
+                font-weight: entry.kind == "DIR" ? 700 : 500;
+                overflow: elide;
+                horizontal-stretch: 1;
+            }
+
+            Text {
+                text: entry.kind == "DIR" ? "Open this folder to browse nested files" :
+                      entry.modified == "" ? "No timestamp available" : entry.modified;
+                color: Palette.foreground.with-alpha(0.48);
+                font-size: 11px;
+                overflow: elide;
+                horizontal-stretch: 1;
+            }
+        }
+
+        KindBadge {
+            kind: entry.kind;
+        }
+
+        Text {
+            text: entry.kind == "DIR" ? "--" : entry.size;
+            color: Palette.foreground.with-alpha(0.55);
+            font-size: 12px;
+            width: 78px;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+        }
+
+        if entry.kind == "DIR" : ActionChip {
+            label: "Open";
+            width: 72px;
+            tapped => { root.row-clicked(root.index); }
+        }
+
+        if entry.kind != "DIR" : ActionChip {
+            label: "Download";
+            width: 92px;
+            tapped => { root.download-clicked(root.index); }
+        }
+
+        if entry.kind != "DIR" : ActionChip {
+            label: "Delete";
+            width: 76px;
+            danger: true;
+            tapped => { root.delete-clicked(root.index); }
+        }
+        
+    }
+    
+}
+
+component TableHeader inherits Rectangle {
+    height: 34px;
+    background: transparent;
+
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 18px;
+        spacing: 12px;
+        alignment: center;
+
+        Rectangle { width: 40px; }
+
+        Text {
+            text: "Name";
+            font-size: 10px;
+            font-weight: 700;
+            color: Palette.foreground.with-alpha(0.48);
+            letter-spacing: 0.7px;
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+        }
+
+        Text {
+            text: "Type";
+            font-size: 10px;
+            font-weight: 700;
+            color: Palette.foreground.with-alpha(0.48);
+            width: 56px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+
+        Text {
+            text: "Size";
+            font-size: 10px;
+            font-weight: 700;
+            color: Palette.foreground.with-alpha(0.48);
+            width: 78px;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+        }
+
+        Rectangle { width: 176px; }
+    }
+}
+
+component NavItem inherits Rectangle {
+    in property <string> icon;
+    in property <string> label;
+    in property <bool> active: false;
+
+    callback clicked();
+
+    height: 42px;
+    border-radius: 12px;
+    background: active
+        ? Palette.accent-background.with-alpha(0.16)
+        : nav-touch.has-hover
+            ? Palette.foreground.with-alpha(0.05)
+            : transparent;
+
+    nav-touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+        spacing: 10px;
+        alignment: center;
+
+        Rectangle {
+            width: 24px;
+            height: 24px;
+            border-radius: 8px;
+            background: active
+                ? Palette.accent-background.with-alpha(0.18)
+                : Palette.foreground.with-alpha(0.06);
+
+            Text {
+                text: icon;
+                font-size: 11px;
+                font-weight: 700;
+                color: active ? Palette.accent-background : Palette.foreground.with-alpha(0.7);
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                y: (parent.height - self.height) / 2;
+                width: 100%;
+                height: 100%;
+            }
+            y: (parent.height - self.height) / 2;
+        }
+
+        Text {
+            text: label;
+            font-size: 13px;
+            font-weight: active ? 700 : 500;
+            color: active ? Palette.accent-background : Palette.foreground;
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+        }
+    }
+}
+
+component StorageBar inherits Rectangle {
+    in property <float> used-fraction: 0.43;
+    in property <string> used-label: "6.4 GB used";
+    in property <string> total-label: "15 GB total";
+
+    border-radius: 16px;
+    background: Palette.background.with-alpha(0.7);
+    border-width: 1px;
+    border-color: Palette.border.with-alpha(0.7);
+    height: 86px;
+
+    VerticalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+        padding-top: 14px;
+        padding-bottom: 14px;
+        spacing: 8px;
+
+        Text {
+            text: "Storage";
+            font-size: 12px;
+            font-weight: 700;
+            color: Palette.foreground;
+        }
+
+        HorizontalLayout {
+            Text {
+                text: used-label;
+                font-size: 11px;
+                color: Palette.foreground.with-alpha(0.64);
+                horizontal-stretch: 1;
+            }
+
+            Text {
+                text: total-label;
+                font-size: 11px;
+                color: Palette.foreground.with-alpha(0.44);
+            }
+        }
+
+        Rectangle {
+            height: 7px;
+            border-radius: 4px;
+            background: Palette.border.with-alpha(0.8);
+
+            Rectangle {
+                width: parent.width * used-fraction;
+                height: parent.height;
+                border-radius: 4px;
+                background: used-fraction > 0.85 ? #e53e3e : Palette.accent-background;
+            }
+        }
+    }
+}
+
+export component AppWindow inherits Window {
+    title: "CloudDrive";
+    min-width: 980px;
+    min-height: 620px;
+    background: #f5f7fb;
+
+    in-out property <[FileEntry]> files: [
+        { name: "Project Report Q1.pdf", size: "2.1 MB", kind: "PDF", modified: "Apr 12, 2025" },
+        { name: "Architecture Diagram.png", size: "840 KB", kind: "PNG", modified: "Apr 10, 2025" },
+        { name: "Demo Video.mp4", size: "128 MB", kind: "MP4", modified: "Apr 08, 2025" },
+        { name: "Source Code.zip", size: "5.3 MB", kind: "ZIP", modified: "Apr 07, 2025" },
+    ];
+
+    in-out property <string> search-text: "";
+    in-out property <bool> is-loading: false;
+    in-out property <string> status-msg: "8 files | 141.5 MB used";
+    in-out property <int> active-tab: 0;
+    in-out property <string> prefix: "";
+
+    callback upload-clicked();
+    callback upload-folder-clicked();
+    callback activate-entry(int);
+    callback navigate-up();
+    callback download-file(int);
+    callback delete-file(int);
+    callback search-changed(string);
+    callback refresh-clicked();
+
+    HorizontalLayout {
+        spacing: 0px;
+
+        Rectangle {
+            width: 248px;
+            background: #122033;
+
+            VerticalLayout {
+                padding-left: 14px;
+                padding-right: 14px;
+                padding-top: 18px;
+                padding-bottom: 16px;
+                spacing: 12px;
+
+                Rectangle {
+                    height: 68px;
+                    border-radius: 18px;
+                    background: #1a2c45;
+
+                    HorizontalLayout {
+                        padding-left: 16px;
+                        padding-right: 16px;
+                        spacing: 12px;
+                        alignment: center;
+
+                        Rectangle {
+                            width: 36px;
+                            height: 36px;
+                            border-radius: 12px;
+                            background: #d7e7ff;
+
+                            Text {
+                                text: "CD";
+                                color: #16324f;
+                                font-size: 12px;
+                                font-weight: 800;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                                y: (parent.height - self.height) / 2;
+                                width: 100%;
+                                height: 100%;
+                            }
+                        }
+
+                        VerticalLayout {
+                            spacing: 2px;
+                            alignment: start;
+
+                            Text {
+                                text: "CloudDrive";
+                                color: white;
+                                font-size: 17px;
+                                font-weight: 700;
+                            }
+
+                            Text {
+                                text: "Personal workspace";
+                                color: white.with-alpha(0.55);
+                                font-size: 11px;
+                            }
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+
+                    Button {
+                        text: "+ File";
+                        primary: true;
+                        height: 42px;
+                        horizontal-stretch: 1;
+                        clicked => { root.upload-clicked(); }
+                    }
+
+                    Button {
+                        text: "+ Folder";
+                        height: 42px;
+                        horizontal-stretch: 1;
+                        clicked => { root.upload-folder-clicked(); }
+                    }
+                }
+
+                Rectangle {
+                    height: 92px;
+                    border-radius: 16px;
+                    background: #1a2c45;
+
+                    VerticalLayout {
+                        padding-left: 14px;
+                        padding-right: 14px;
+                        padding-top: 12px;
+                        padding-bottom: 12px;
+                        spacing: 5px;
+
+                        Text {
+                            text: "Current view";
+                            color: white.with-alpha(0.56);
+                            font-size: 10px;
+                            font-weight: 700;
+                        }
+
+                        Text {
+                            text: root.prefix == "" ? "Root" : root.prefix;
+                            color: white;
+                            font-size: 13px;
+                            font-weight: 700;
+                            overflow: elide;
+                        }
+
+                        Text {
+                            text: root.status-msg;
+                            color: white.with-alpha(0.56);
+                            font-size: 11px;
+                            overflow: elide;
+                        }
+                    }
+                }
+
+                VerticalLayout {
+                    spacing: 4px;
+
+                    NavItem {
+                        icon: "MD";
+                        label: "My Drive";
+                        active: root.active-tab == 0;
+                        clicked => { root.active-tab = 0; }
+                    }
+
+                    NavItem {
+                        icon: "RC";
+                        label: "Recent";
+                        active: root.active-tab == 1;
+                        clicked => { root.active-tab = 1; }
+                    }
+
+                    NavItem {
+                        icon: "ST";
+                        label: "Starred";
+                        active: root.active-tab == 2;
+                        clicked => { root.active-tab = 2; }
+                    }
+
+                    NavItem {
+                        icon: "TR";
+                        label: "Trash";
+                        active: root.active-tab == 3;
+                        clicked => { root.active-tab = 3; }
+                    }
+                }
+
+                Rectangle { vertical-stretch: 1; }
+
+                StorageBar {
+                    used-fraction: 0.43;
+                    used-label: "6.4 GB used";
+                    total-label: "15 GB";
+                }
+            }
+        }
+
+        Rectangle {
+            horizontal-stretch: 1;
+            background: #f5f7fb;
+
+            VerticalLayout {
+                padding-left: 24px;
+                padding-right: 24px;
+                padding-top: 24px;
+                padding-bottom: 18px;
+                spacing: 18px;
+
+                Rectangle {
+                    height: 112px;
+                    border-radius: 22px;
+                    background: #eef4ff;
+                    border-width: 1px;
+                    border-color: #d8e4f8;
+
+                    VerticalLayout {
+                        padding-left: 22px;
+                        padding-right: 22px;
+                        padding-top: 16px;
+                        padding-bottom: 16px;
+                        spacing: 10px;
+
+                        HorizontalLayout {
+                            spacing: 10px;
+                            alignment: center;
+
+                            Rectangle {
+                                width: 70px;
+                                height: 30px;
+                                border-radius: 15px;
+                                background: #dce9ff;
+
+                                Text {
+                                    text: "Drive";
+                                    color: #234f8d;
+                                    font-size: 11px;
+                                    font-weight: 700;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                    y: (parent.height - self.height) / 2;
+                                    width: 100%;
+                                    height: 100%;
+                                }
+                            }
+
+                            Text {
+                                text: root.prefix == "" ? "My Drive" : root.prefix;
+                                font-size: 24px;
+                                font-weight: 700;
+                                color: #18283a;
+                                overflow: elide;
+                                horizontal-stretch: 1;
+                            }
+
+                            if root.prefix != "" : ActionChip {
+                                label: "Up";
+                                width: 58px;
+                                tapped => { root.navigate-up(); }
+                            }
+
+                            ActionChip {
+                                label: "Refresh";
+                                width: 84px;
+                                tapped => { root.refresh-clicked(); }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 12px;
+                            alignment: center;
+
+                            Rectangle {
+                                horizontal-stretch: 1;
+                                height: 42px;
+                                border-radius: 21px;
+                                background: Palette.background;
+                                border-width: 1px;
+                                border-color: #d7dde8;
+
+                                HorizontalLayout {
+                                    padding-left: 14px;
+                                    padding-right: 14px;
+                                    spacing: 8px;
+                                    alignment: center;
+
+                                    Rectangle{Text {
+                                        text: "Find";
+                                        color: Palette.foreground.with-alpha(0.45);
+                                        font-size: 11px;
+                                        font-weight: 700;
+                                        
+                                    }
+                                    y: (parent.height - self.height) / 2;
+                                }
+
+                                    LineEdit {
+                                        placeholder-text: "Search files and folders";
+                                        horizontal-stretch: 1;
+                                        text <=> root.search-text;
+                                        edited => { root.search-changed(self.text); }
+                                    }
+                                }
+                            }
+
+                            Rectangle {
+                                width: 220px;
+                                height: 42px;
+                                border-radius: 21px;
+                                background: #18283a;
+
+                                HorizontalLayout {
+                                    padding-left: 14px;
+                                    padding-right: 14px;
+                                    spacing: 8px;
+                                    alignment: center;
+
+                                    Rectangle{
+                                    //     Text {
+                                    //     text: "Status";
+                                    //     color: white.with-alpha(0.6);
+                                    //     font-size: 10px;
+                                    //     font-weight: 700;
+                                        
+                                    // }
+
+                                    Text {
+                                        text: root.status-msg;
+                                        color: white;
+                                        font-size: 11px;
+                                        overflow: elide;
+                                        horizontal-stretch: 1;
+                                        
+                                    }
+                                    y: (parent.height - self.height) / 2;
+                                }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if root.is-loading : Rectangle {
+                    vertical-stretch: 1;
+                    border-radius: 22px;
+                    background: Palette.background;
+                    border-width: 1px;
+                    border-color: Palette.border.with-alpha(0.7);
+
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 14px;
+
+                        Spinner {
+                            width: 46px;
+                            height: 46px;
+                            indeterminate: true;
+                        }
+
+                        Text {
+                            text: "Loading files";
+                            color: Palette.foreground.with-alpha(0.62);
+                            font-size: 13px;
+                            font-weight: 600;
+                        }
+                    }
+                }
+
+                if !root.is-loading : Rectangle {
+                    vertical-stretch: 1;
+                    border-radius: 22px;
+                    background: Palette.background;
+                    border-width: 1px;
+                    border-color: Palette.border.with-alpha(0.72);
+
+                    VerticalLayout {
+                        padding-left: 14px;
+                        padding-right: 14px;
+                        padding-top: 14px;
+                        padding-bottom: 14px;
+                        spacing: 10px;
+
+                        TableHeader { }
+
+                        ScrollView {
+                            vertical-stretch: 1;
+
+                            VerticalLayout {
+                                spacing: 10px;
+
+                                for entry[i] in root.files : FileRow {
+                                    entry: entry;
+                                    index: i;
+                                    is-even: mod(i, 2) == 0;
+                                    row-clicked(idx) => { root.activate-entry(idx); }
+                                    download-clicked(idx) => { root.download-file(idx); }
+                                    delete-clicked(idx) => { root.delete-file(idx); }
+                                }
+
+                                if root.files.length == 0 : Rectangle {
+                                    height: 280px;
+                                    border-radius: 18px;
+                                    background: #f7f9fc;
+                                    border-width: 1px;
+                                    border-color: #e3e8f1;
+
+                                    VerticalLayout {
+                                        alignment: center;
+                                        spacing: 10px;
+
+                                        Rectangle {
+                                            width: 64px;
+                                            height: 64px;
+                                            border-radius: 20px;
+                                            background: #dce9ff;
+
+                                            Text {
+                                                text: "0";
+                                                color: #234f8d;
+                                                font-size: 24px;
+                                                font-weight: 800;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                                y: (parent.height - self.height) / 2;
+                                                width: 100%;
+                                                height: 100%;
+                                            }
+                                        }
+
+                                        Text {
+                                            text: root.prefix == "" ? "This drive is empty" : "This folder is empty";
+                                            font-size: 17px;
+                                            font-weight: 700;
+                                            color: #223247;
+                                            horizontal-alignment: center;
+                                        }
+
+                                        Text {
+                                            text: root.prefix == "" ? "Upload a file or folder to start building your drive." :
+                                                  "Go up a level or upload files into this folder path.";
+                                            font-size: 12px;
+                                            color: Palette.foreground.with-alpha(0.48);
+                                            horizontal-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    height: 26px;
+                    spacing: 10px;
+                    alignment: center;
+
+                    Text {
+                        text: root.status-msg;
+                        font-size: 11px;
+                        color: Palette.foreground.with-alpha(0.48);
+                        horizontal-stretch: 1;
+                        vertical-alignment: center;
+                    }
+
+                    Text {
+                        text: "Connected to S3";
+                        font-size: 11px;
+                        color: #2f855a;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+    }
+}
