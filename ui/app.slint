@@ -44,24 +44,36 @@ component KindBadge inherits Rectangle {
 component ActionChip inherits Rectangle {
     in property <string> label;
     in property <bool> danger: false;
+    in property <bool> enabled: true;
     callback tapped();
 
     height: 30px;
     width: 78px;
     border-radius: 15px;
     border-width: 1px;
-    border-color: danger ? #d64545.with-alpha(0.3) : Palette.border.with-alpha(0.7);
-    background: tap.has-hover
-        ? (danger ? #d64545.with-alpha(0.10) : Palette.accent-background.with-alpha(0.08))
-        : (danger ? #d64545.with-alpha(0.04) : Palette.background);
+    border-color: !enabled
+        ? Palette.border.with-alpha(0.35)
+        : danger
+            ? #d64545.with-alpha(0.3)
+            : Palette.border.with-alpha(0.7);
+    background: !enabled
+        ? Palette.foreground.with-alpha(0.03)
+        : tap.has-hover
+            ? (danger ? #d64545.with-alpha(0.10) : Palette.accent-background.with-alpha(0.08))
+            : (danger ? #d64545.with-alpha(0.04) : Palette.background);
 
     tap := TouchArea {
+        enabled: root.enabled;
         clicked => { root.tapped(); }
     }
 
     Text {
         text: root.label;
-        color: danger ? #c53030 : Palette.foreground.with-alpha(0.78);
+        color: !enabled
+            ? Palette.foreground.with-alpha(0.36)
+            : danger
+                ? #c53030
+                : Palette.foreground.with-alpha(0.78);
         font-size: 11px;
         font-weight: 600;
         horizontal-alignment: center;
@@ -369,6 +381,8 @@ export component AppWindow inherits Window {
     in-out property <string> status-msg: "8 files | 141.5 MB used";
     in-out property <int> active-tab: 0;
     in-out property <string> prefix: "";
+    in-out property <string> drive-status: "Drive offline";
+    in-out property <bool> drive-mounted: false;
 
     callback upload-clicked();
     callback upload-folder-clicked();
@@ -378,6 +392,9 @@ export component AppWindow inherits Window {
     callback delete-file(int);
     callback search-changed(string);
     callback refresh-clicked();
+    callback mount-drive-clicked();
+    callback sync-drive-clicked();
+    callback unmount-drive-clicked();
 
     HorizontalLayout {
         spacing: 0px;
@@ -463,7 +480,7 @@ export component AppWindow inherits Window {
                 }
 
                 Rectangle {
-                    height: 92px;
+                    height: 138px;
                     border-radius: 16px;
                     background: #1a2c45;
 
@@ -492,6 +509,13 @@ export component AppWindow inherits Window {
                         Text {
                             text: root.status-msg;
                             color: white.with-alpha(0.56);
+                            font-size: 11px;
+                            overflow: elide;
+                        }
+
+                        Text {
+                            text: root.drive-status;
+                            color: #9fd0ff;
                             font-size: 11px;
                             overflow: elide;
                         }
@@ -607,6 +631,24 @@ export component AppWindow inherits Window {
                                 label: "Refresh";
                                 width: 84px;
                                 tapped => { root.refresh-clicked(); }
+                            }
+
+                            ActionChip {
+                                label: "Sync";
+                                width: 70px;
+                                tapped => { root.sync-drive-clicked(); }
+                            }
+
+                            if !root.drive-mounted : ActionChip {
+                                label: "Mount";
+                                width: 78px;
+                                tapped => { root.mount-drive-clicked(); }
+                            }
+
+                            if root.drive-mounted : ActionChip {
+                                label: "Unmount";
+                                width: 96px;
+                                tapped => { root.unmount-drive-clicked(); }
                             }
                         }
 

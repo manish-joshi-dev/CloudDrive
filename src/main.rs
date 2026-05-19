@@ -1,6 +1,6 @@
 use std::{
     cell::RefCell,
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     rc::Rc,
 };
@@ -11,6 +11,7 @@ use walkdir::WalkDir;
 
 slint::include_modules!();
 mod server;
+mod virtual_drive;
 
 #[derive(Clone, Debug)]
 struct ObjectEntry {
@@ -76,7 +77,7 @@ fn rebuild_visible_entries(state: &mut BrowserState) {
         if !object.key.starts_with(&prefix) {
             continue;
         }
-
+        
         let Some(remainder) = object.key.get(prefix.len()..) else {
             continue;
         };
@@ -159,24 +160,26 @@ fn push_state_to_ui(app_weak: &slint::Weak<AppWindow>, browser_state: &Rc<RefCel
     }
 }
 
-async fn fetch_objects() -> Vec<ObjectEntry> {
-    let response = match reqwest::get("http://localhost:3000/files").await {
-        Ok(response) => response,
-        Err(err) => {
-            eprintln!("failed to fetch files: {err}");
-            return Vec::new();
-        }
-    };
+async fn fetch_objects() -> Result<Vec<ObjectEntry>, String> {
+    let response = reqwest::get("http://localhost:3000/files")
+        .await
+        .map_err(|err| format!("failed to fetch files: {err}"))?;
 
-    let parsed = match response.json::<Vec<serde_json::Value>>().await {
-        Ok(parsed) => parsed,
-        Err(err) => {
-            eprintln!("failed to parse file list: {err}");
-            return Vec::new();
-        }
-    };
+    let status = response.status();
+    if !status.is_success() {
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "<failed to read response body>".to_string());
+        return Err(format!("file list request failed with status {status}: {body}"));
+    }
 
-    parsed
+    let parsed = response
+        .json::<Vec<serde_json::Value>>()
+        .await
+        .map_err(|err| format!("failed to parse file list: {err}"))?;
+
+    Ok(parsed
         .into_iter()
         .map(|file| ObjectEntry {
             key: file["name"].as_str().unwrap_or_default().to_string(),
@@ -184,15 +187,18 @@ async fn fetch_objects() -> Vec<ObjectEntry> {
             kind: file["kind"].as_str().unwrap_or_default().to_string(),
             modified: file["modified"].as_str().unwrap_or_default().to_string(),
         })
-        .collect()
+        .collect())
 }
 
-async fn refresh_objects(browser_state: Rc<RefCell<BrowserState>>, app_weak: slint::Weak<AppWindow>) {
+async fn refresh_objects(
+    browser_state: Rc<RefCell<BrowserState>>,
+    app_weak: slint::Weak<AppWindow>,
+) -> Result<(), String> {
     if let Some(app) = app_weak.upgrade() {
         app.set_is_loading(true);
     }
 
-    let objects = fetch_objects().await;
+    let objects = fetch_objects().await?;
 
     {
         let mut state = browser_state.borrow_mut();
@@ -201,6 +207,7 @@ async fn refresh_objects(browser_state: Rc<RefCell<BrowserState>>, app_weak: sli
     }
 
     push_state_to_ui(&app_weak, &browser_state);
+    Ok(())
 }
 
 fn encode_key(key: &str) -> String {
@@ -307,6 +314,12 @@ async fn download_to_path(key: String, save_path: PathBuf) -> Result<(), String>
         .await
         .map_err(|err| format!("failed to read download body: {err}"))?;
 
+    if let Some(parent) = save_path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|err| format!("failed to create directory {}: {err}", parent.display()))?;
+    }
+
     tokio::fs::write(save_path, bytes)
         .await
         .map_err(|err| format!("failed to save file: {err}"))?;
@@ -328,6 +341,119 @@ async fn delete_object(key: String) -> Result<(), String> {
     }
 }
 
+fn set_drive_status(app_weak: &slint::Weak<AppWindow>, message: impl Into<SharedString>) {
+    if let Some(app) = app_weak.upgrade() {
+        app.set_drive_status(message.into());
+    }
+}
+
+fn log_drive_error(context: &str, err: &str) {
+    eprintln!("[drive:{context}] {err}");
+}
+
+fn refresh_drive_status(app_weak: &slint::Weak<AppWindow>) {
+    if let Some(app) = app_weak.upgrade() {
+        let preferred_letter = virtual_drive::preferred_drive_letter();
+        let mounted = virtual_drive::is_mounted(preferred_letter);
+        app.set_drive_mounted(mounted);
+        app.set_drive_status(virtual_drive::status_text(preferred_letter).into());
+    }
+}
+
+async fn sync_virtual_drive_cache() -> Result<String, String> {
+    let cache_root = virtual_drive::ensure_cache_root()?;
+    let drive_letter = virtual_drive::preferred_drive_letter();
+    if !virtual_drive::is_mounted(drive_letter) {
+        return Err(format!(
+            "{} is not mounted yet",
+            virtual_drive::drive_label(drive_letter)
+        ));
+    }
+
+    let manifest = virtual_drive::load_manifest(&cache_root);
+    let local_files = virtual_drive::collect_local_files(&cache_root)?;
+
+    for (key, local_entry) in &local_files {
+        let unchanged = manifest
+            .entries
+            .get(key)
+            .map(|entry| {
+                entry.size == local_entry.size
+                    && entry.modified_unix_secs == local_entry.modified_unix_secs
+            })
+            .unwrap_or(false);
+
+        if unchanged {
+            continue;
+        }
+
+        upload_selected_file(local_entry.path.clone(), key.clone()).await?;
+    }
+
+    let local_keys: BTreeSet<String> = local_files.keys().cloned().collect();
+    for key in manifest.entries.keys() {
+        if !local_keys.contains(key) {
+            delete_object(key.clone()).await?;
+        }
+    }
+
+    let remote_objects = fetch_objects().await?;
+    let mut keep_keys = BTreeSet::new();
+    let mut skipped_keys = Vec::new();
+    for object in &remote_objects {
+        let cache_path = match virtual_drive::key_to_cache_path(&cache_root, &object.key) {
+            Ok(path) => path,
+            Err(err) => {
+                skipped_keys.push(format!("{} ({err})", object.key));
+                continue;
+            }
+        };
+
+        keep_keys.insert(object.key.clone());
+        download_to_path(object.key.clone(), cache_path).await?;
+    }
+
+    virtual_drive::remove_stale_local_files(&cache_root, &keep_keys)?;
+
+    let refreshed_local_files = virtual_drive::collect_local_files(&cache_root)?;
+    let refreshed_manifest = virtual_drive::manifest_from_local_files(&refreshed_local_files);
+    virtual_drive::save_manifest(&cache_root, &refreshed_manifest)?;
+
+    let mut message = format!(
+        "Synced {} item(s) to {}",
+        keep_keys.len(),
+        virtual_drive::drive_label(virtual_drive::preferred_drive_letter())
+    );
+
+    if !skipped_keys.is_empty() {
+        let sample = skipped_keys
+            .iter()
+            .take(2)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+        message.push_str(&format!(
+            " | skipped {} invalid key(s): {}",
+            skipped_keys.len(),
+            sample
+        ));
+    }
+
+    Ok(message)
+}
+
+async fn mount_virtual_drive() -> Result<String, String> {
+    let drive_letter = virtual_drive::preferred_drive_letter();
+    let cache_root = virtual_drive::ensure_cache_root()?;
+    virtual_drive::mount_drive(drive_letter, &cache_root)?;
+    let sync_message = sync_virtual_drive_cache().await?;
+    Ok(format!(
+        "{} | {}",
+        sync_message,
+        virtual_drive::status_text(drive_letter)
+    ))
+}
+
 #[tokio::main]
 async fn main() {
     let app = AppWindow::new().unwrap();
@@ -338,8 +464,16 @@ async fn main() {
 
     tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
 
+    let initial_objects = match fetch_objects().await {
+        Ok(objects) => objects,
+        Err(err) => {
+            eprintln!("{err}");
+            Vec::new()
+        }
+    };
+
     let browser_state = Rc::new(RefCell::new(BrowserState {
-        all_objects: fetch_objects().await,
+        all_objects: initial_objects,
         ..Default::default()
     }));
 
@@ -350,6 +484,7 @@ async fn main() {
     }
 
     let app_weak = app.as_weak();
+    refresh_drive_status(&app_weak);
 
     {
         let app_weak = app_weak.clone();
@@ -401,9 +536,106 @@ async fn main() {
             let app_weak = app_weak.clone();
             let browser_state = browser_state.clone();
             slint::spawn_local(async move {
-                refresh_objects(browser_state, app_weak).await;
+                if let Err(err) = refresh_objects(browser_state, app_weak.clone()).await {
+                    if let Some(app) = app_weak.upgrade() {
+                        app.set_is_loading(false);
+                        app.set_drive_status(format!("Refresh failed: {err}").into());
+                    }
+                }
             })
             .unwrap();
+        });
+    }
+
+    {
+        let app_weak = app_weak.clone();
+        app.on_mount_drive_clicked(move || {
+            let app_weak = app_weak.clone();
+            if let Some(app) = app_weak.upgrade() {
+                app.set_is_loading(true);
+                app.set_drive_status("Mounting CloudDrive...".into());
+            }
+
+              slint::spawn_local(async move {
+                  let message = match mount_virtual_drive().await {
+                      Ok(message) => {
+                          println!("[drive:mount] {message}");
+                          message
+                      }
+                      Err(err) => {
+                          log_drive_error("mount", &err);
+                          format!("Drive mount failed: {err}")
+                      }
+                  };
+
+                if let Some(app) = app_weak.upgrade() {
+                    app.set_is_loading(false);
+                    app.set_drive_mounted(virtual_drive::is_mounted(virtual_drive::preferred_drive_letter()));
+                    app.set_drive_status(message.into());
+                }
+            })
+            .unwrap();
+        });
+    }
+
+    {
+        let app_weak = app_weak.clone();
+        app.on_sync_drive_clicked(move || {
+            let app_weak = app_weak.clone();
+            if let Some(app) = app_weak.upgrade() {
+                app.set_is_loading(true);
+                app.set_drive_status("Syncing CloudDrive...".into());
+            }
+
+              slint::spawn_local(async move {
+                  let message = match sync_virtual_drive_cache().await {
+                      Ok(message) => {
+                          let message = format!(
+                              "{} | {}",
+                              message,
+                              virtual_drive::status_text(virtual_drive::preferred_drive_letter())
+                          );
+                          println!("[drive:sync] {message}");
+                          message
+                      }
+                      Err(err) => {
+                          log_drive_error("sync", &err);
+                          format!("Drive sync failed: {err}")
+                      }
+                  };
+
+                if let Some(app) = app_weak.upgrade() {
+                    app.set_is_loading(false);
+                    app.set_drive_mounted(virtual_drive::is_mounted(virtual_drive::preferred_drive_letter()));
+                    app.set_drive_status(message.into());
+                }
+            })
+            .unwrap();
+        });
+    }
+
+    {
+        let app_weak = app_weak.clone();
+        app.on_unmount_drive_clicked(move || {
+            let app_weak = app_weak.clone();
+            if let Some(app) = app_weak.upgrade() {
+                app.set_drive_status("Unmounting CloudDrive...".into());
+            }
+
+              let drive_letter = virtual_drive::preferred_drive_letter();
+              let message = match virtual_drive::unmount_drive(drive_letter) {
+                  Ok(()) => {
+                      let message = virtual_drive::status_text(drive_letter);
+                      println!("[drive:unmount] {message}");
+                      message
+                  }
+                  Err(err) => {
+                      log_drive_error("unmount", &err);
+                      format!("Drive unmount failed: {err}")
+                  }
+              };
+            refresh_drive_status(&app_weak);
+            set_drive_status(&app_weak, message);
         });
     }
 
@@ -438,7 +670,13 @@ async fn main() {
                 if let Err(err) = upload_selected_file(selected_path, target_key).await {
                     eprintln!("{err}");
                 }
-                refresh_objects(browser_state, app_weak).await;
+                if let Err(err) = refresh_objects(browser_state, app_weak.clone()).await {
+                    eprintln!("{err}");
+                    if let Some(app) = app_weak.upgrade() {
+                        app.set_is_loading(false);
+                        app.set_drive_status(format!("Refresh failed: {err}").into());
+                    }
+                }
             })
             .unwrap();
         });
@@ -469,7 +707,13 @@ async fn main() {
                 if let Err(err) = upload_folder(selected_folder, prefix).await {
                     eprintln!("{err}");
                 }
-                refresh_objects(browser_state, app_weak).await;
+                if let Err(err) = refresh_objects(browser_state, app_weak.clone()).await {
+                    eprintln!("{err}");
+                    if let Some(app) = app_weak.upgrade() {
+                        app.set_is_loading(false);
+                        app.set_drive_status(format!("Refresh failed: {err}").into());
+                    }
+                }
             })
             .unwrap();
         });
@@ -536,7 +780,13 @@ async fn main() {
                 if let Err(err) = delete_object(entry.full_key).await {
                     eprintln!("{err}");
                 }
-                refresh_objects(browser_state, app_weak).await;
+                if let Err(err) = refresh_objects(browser_state, app_weak.clone()).await {
+                    eprintln!("{err}");
+                    if let Some(app) = app_weak.upgrade() {
+                        app.set_is_loading(false);
+                        app.set_drive_status(format!("Refresh failed: {err}").into());
+                    }
+                }
             })
             .unwrap();
         });

@@ -1,11 +1,12 @@
 use axum::{Router, response::{IntoResponse, Json}, routing::{get, post, delete},extract::{State,Path,Multipart},http::StatusCode,};
-use serde_json::{json, Value};
+use aws_config::BehaviorVersion;
+use serde_json::json;
 use std::net::SocketAddr;
 use dotenv::dotenv;
-use tracing::{debug, info};
+use tracing::debug;
 use aws_sdk_s3::Client;
 use std::sync::Arc;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use aws_sdk_s3::primitives::ByteStream;
 struct AppState {
     s3: Client,
@@ -41,7 +42,7 @@ fn get_kind(name: &str) -> String {
 
 pub async fn run() {
     dotenv().ok();
-   let config = aws_config::from_env()
+   let config = aws_config::defaults(BehaviorVersion::latest())
     .load()
     .await;
     // debug!(config = ?config, "AWS config loaded");
@@ -65,10 +66,6 @@ pub async fn run() {
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
-}
-
-async fn health() -> Json<Value> {
-    Json(json!({ "status": "ok" }))
 }
 
 async fn list_files(State(state):State<Arc<AppState>>)->impl IntoResponse{
